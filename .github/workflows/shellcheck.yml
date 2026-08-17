@@ -1,0 +1,30 @@
+name: Shell validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Bash syntax
+        run: |
+          bash -n install.sh
+          bash -n upgrades/upgrade-v3.8.1.sh
+
+      - name: ShellCheck errors
+        run: |
+          shellcheck --severity=error install.sh upgrades/upgrade-v3.8.1.sh
