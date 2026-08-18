@@ -968,6 +968,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, "/usr/local/lib/pi-network-status")
 from kuma_normalizer import normalize_kuma_status
@@ -1296,28 +1297,74 @@ def update_device(payload, reset=False):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    @staticmethod
+    def _address_allowed(address):
+        return (
+            address.is_loopback
+            or address in ipaddress.ip_network(LAN_CIDR, strict=False)
+            or address in ipaddress.ip_network("100.64.0.0/10")
+        )
+
     def _client_allowed(self):
         try:
             address = ipaddress.ip_address(self.client_address[0])
-            return address.is_loopback or address in ipaddress.ip_network(LAN_CIDR, strict=False) or address in ipaddress.ip_network("100.64.0.0/10")
+            return self._address_allowed(address)
         except Exception:
             return False
 
+    def _origin_allowed(self):
+        origin = self.headers.get("Origin", "").strip()
+        if not origin:
+            return True
+        try:
+            parsed_origin = urlsplit(origin)
+            parsed_host = urlsplit(f"//{self.headers.get('Host', '')}")
+            if parsed_origin.scheme not in ("http", "https"):
+                return False
+            if parsed_origin.username is not None or parsed_origin.password is not None:
+                return False
+            if parsed_origin.path not in ("", "/") or parsed_origin.query or parsed_origin.fragment:
+                return False
+            if parsed_host.username is not None or parsed_host.password is not None:
+                return False
+            if parsed_host.path or parsed_host.query or parsed_host.fragment:
+                return False
+            origin_address = ipaddress.ip_address(parsed_origin.hostname or "")
+            host_address = ipaddress.ip_address(parsed_host.hostname or "")
+            origin_port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
+            host_port = parsed_host.port or 80
+            return (
+                origin_address == host_address
+                and self._address_allowed(origin_address)
+                and host_port == PORT
+                and origin_port in (DASHBOARD_PORT, PORT)
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def _json_content_type(self):
+        media_type = self.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+        return media_type == "application/json"
+
     def _cors_origin(self):
-        origin = self.headers.get("Origin", "")
-        if origin and self._client_allowed():
+        origin = self.headers.get("Origin", "").strip()
+        if origin and self._client_allowed() and self._origin_allowed():
             return origin
-        return "*"
+        return None
 
     def _json(self, payload, status=200, public=False, writable=False):
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
-        if public or writable:
-            self.send_header("Access-Control-Allow-Origin", self._cors_origin() if writable else "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS" if writable else "GET")
-            if writable:
+        if public:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET")
+        elif writable:
+            origin = self._cors_origin()
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.send_header("Vary", "Origin")
         self.send_header("Content-Length", str(len(body)))
@@ -1350,9 +1397,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         path = self.path.split("?", 1)[0]
-        if path.startswith("/manage/") and self._client_allowed():
+        origin = self._cors_origin()
+        if path.startswith("/manage/") and origin:
             self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+            self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Access-Control-Max-Age", "600")
@@ -1464,6 +1512,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if not self._client_allowed():
             self._json({"error": "management is restricted to LAN/Tailscale clients"}, 403, writable=True)
+            return
+        if not self._origin_allowed():
+            self._json({"error": "management request origin is not allowed"}, 403, writable=True)
+            return
+        if not self._json_content_type():
+            self._json({"error": "management requests require application/json"}, 415, writable=True)
             return
         try:
             payload = self._read_json()
@@ -1648,13 +1702,22 @@ body {
 .network-action-toolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.55rem;
-  min-height: 2.5rem;
-  margin-top: 0.15rem;
-  margin-bottom: 0.55rem;
+  justify-content: space-between;
+  gap: 0.8rem;
+  min-height: 3.35rem;
+  margin-bottom: 0.7rem;
+  padding: 0.62rem 0.72rem;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.70);
   box-sizing: border-box;
 }
+.network-scan-copy { display: flex; min-width: 0; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.network-scan-title { color: rgb(226, 232, 240); font-size: 0.84rem; font-weight: 600; }
+.network-scan-total,
+.network-scan-age,
+.network-scan-message { color: rgb(100, 116, 139); font-size: 0.68rem; }
+.network-scan-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
 .network-refresh-button,
 .network-manage-button {
   display: inline-flex;
@@ -1670,13 +1733,23 @@ body {
   text-decoration: none;
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
-.network-refresh-button { cursor: pointer; font: inherit; font-size: 0.72rem; }
+.network-refresh-button {
+  cursor: pointer;
+  border-color: rgba(45, 212, 191, 0.42);
+  background: rgba(13, 148, 136, 0.24);
+  color: rgb(204, 251, 241);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
 .network-refresh-button:hover, .network-manage-button:hover { border-color: rgba(45, 212, 191, 0.50); background: rgba(15, 118, 110, 0.15); transform: translateY(-1px); }
 .network-refresh-button:disabled { opacity: 0.58; cursor: wait; transform: none; }
-.network-scan-message { color: rgb(100, 116, 139); font-size: 0.68rem; min-width: 8rem; }
+.network-scan-message { min-width: 8rem; }
 @media (max-width: 680px) {
-  .network-action-toolbar { justify-content: flex-start; flex-wrap: wrap; }
-  .network-scan-message { flex-basis: 100%; }
+  .network-action-toolbar { align-items: stretch; flex-direction: column; }
+  .network-scan-copy { align-items: flex-start; flex-direction: column; gap: 0.12rem; }
+  .network-scan-actions { width: 100%; }
+  .network-refresh-button, .network-manage-button { flex: 1 1 0; }
 }
 
 #kuma-monitored-devices {
@@ -1896,6 +1969,19 @@ cat >"$DEST" <<'V37_JS'
     return `${number.toFixed(number >= 99.995 ? 2 : 1)}% / 24h`;
   }
 
+  function formatScanAge(value) {
+    if (!value) return 'Not scanned yet';
+    const scannedAt = new Date(value);
+    if (Number.isNaN(scannedAt.getTime())) return 'Last scan unavailable';
+    const seconds = Math.max(0, Math.floor((Date.now() - scannedAt.getTime()) / 1000));
+    if (seconds < 60) return 'Last scanned just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `Last scanned ${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `Last scanned ${hours}h ago`;
+    return `Last scanned ${Math.floor(hours / 24)}d ago`;
+  }
+
   function groupCard(group) {
     const groupIcon = GROUP_ICONS[group.key] || 'other';
     const rows = [...(group.monitors || [])].sort(compareByIp).map((monitor) => {
@@ -1964,6 +2050,7 @@ cat >"$DEST" <<'V37_JS'
     let section = document.getElementById(SECTION_ID);
     if (section) {
       alignKumaSection(section);
+      ensureNetworkToolbar(section);
       return section;
     }
     const mount = findMountPoint();
@@ -1972,6 +2059,7 @@ cat >"$DEST" <<'V37_JS'
     section.id = SECTION_ID;
     section.innerHTML = '<div class="kuma-device-grid"></div>';
     mount.parent.insertBefore(section, mount.before);
+    ensureNetworkToolbar(section);
     alignKumaSection(section);
     window.requestAnimationFrame(() => alignKumaSection(section));
     return section;
@@ -1980,6 +2068,7 @@ cat >"$DEST" <<'V37_JS'
   function renderPayload(payload) {
     const section = ensureSection();
     if (!section) return;
+    updateNetworkToolbar(payload?.last_scan, payload?.summary?.total);
     const grid = section.querySelector('.kuma-device-grid');
     if (!payload || payload.configured === false) {
       grid.innerHTML = '<article class="kuma-device-card" data-kuma-group="unclassified"><div class="kuma-device-card-header"><span class="kuma-group-title">Uptime Kuma status page unavailable</span></div></article>';
@@ -2001,33 +2090,38 @@ cat >"$DEST" <<'V37_JS'
       <span class="kuma-summary-cell"><strong class="kuma-summary-value">${Number(summary.maintenance || 0)}</strong><small class="kuma-summary-label">MAINT</small></span>`;
   }
 
-  function alignActionRow(row) {
-    if (!row) return;
-    const mount = findMountPoint();
-    const reference = document.querySelector('#services') || document.querySelector('#bookmarks');
-    if (!mount?.parent || !reference) return;
-    const parentRect = mount.parent.getBoundingClientRect();
-    const referenceRect = reference.getBoundingClientRect();
-    row.style.marginLeft = `${Math.max(0, Math.round(referenceRect.left - parentRect.left))}px`;
-    row.style.marginRight = `${Math.max(0, Math.round(parentRect.right - referenceRect.right))}px`;
-  }
-
-  function ensureNetworkToolbar() {
+  function ensureNetworkToolbar(section) {
+    if (!section) return null;
     let row = document.getElementById(ACTION_ROW_ID);
-    if (row) { alignActionRow(row); return row; }
-    const services = document.querySelector('#services');
-    if (!services?.parentElement) return null;
+    if (row) {
+      if (row.parentElement !== section) section.insertBefore(row, section.firstChild);
+      return row;
+    }
     row = document.createElement('div');
     row.id = ACTION_ROW_ID;
     row.className = 'network-action-toolbar';
     row.innerHTML = `
-      <a class="network-manage-button" href="${API_BASE}/devices" target="_blank" rel="noopener noreferrer">Manage Devices</a>
-      <button class="network-refresh-button" type="button">↻ Refresh Network</button>
-      <span class="network-scan-message" aria-live="polite"></span>`;
-    services.parentElement.insertBefore(row, services);
-    alignActionRow(row);
+      <div class="network-scan-copy">
+        <span class="network-scan-title">Device status</span>
+        <span class="network-scan-total"></span>
+        <span class="network-scan-age">Last scan unavailable</span>
+        <span class="network-scan-message" aria-live="polite">Status reflects the latest network scan</span>
+      </div>
+      <div class="network-scan-actions">
+        <a class="network-manage-button" href="${API_BASE}/devices" target="_blank" rel="noopener noreferrer">Manage devices</a>
+        <button class="network-refresh-button" type="button">↻ Scan network</button>
+      </div>`;
+    section.insertBefore(row, section.firstChild);
     row.querySelector('.network-refresh-button')?.addEventListener('click', refreshNetwork);
     return row;
+  }
+
+  function updateNetworkToolbar(lastScan, total) {
+    const row = ensureNetworkToolbar(document.getElementById(SECTION_ID));
+    const age = row?.querySelector('.network-scan-age');
+    const count = row?.querySelector('.network-scan-total');
+    if (age) age.textContent = formatScanAge(lastScan);
+    if (count) count.textContent = Number.isFinite(Number(total)) ? `${Number(total)} devices` : '';
   }
 
   async function discoverySummary() {
@@ -2038,7 +2132,7 @@ cat >"$DEST" <<'V37_JS'
   }
 
   async function refreshNetwork() {
-    const row = ensureNetworkToolbar();
+    const row = ensureNetworkToolbar(ensureSection());
     const button = row?.querySelector('.network-refresh-button');
     const message = row?.querySelector('.network-scan-message');
     if (!button) return;
@@ -2066,7 +2160,7 @@ cat >"$DEST" <<'V37_JS'
       if (message) message.textContent = `Scan failed: ${error.message}`;
     } finally {
       button.disabled = false;
-      button.textContent = '↻ Refresh Network';
+      button.textContent = '↻ Scan network';
       window.setTimeout(() => { if (message) message.textContent = ''; }, 5000);
     }
   }
@@ -2087,10 +2181,10 @@ cat >"$DEST" <<'V37_JS'
     }
   }
 
-  const observer = new MutationObserver(() => { ensureSection(); ensureNetworkToolbar(); });
+  const observer = new MutationObserver(() => { ensureSection(); });
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  window.addEventListener('resize', () => { alignKumaSection(document.getElementById(SECTION_ID)); alignActionRow(document.getElementById(ACTION_ROW_ID)); }, { passive: true });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { ensureNetworkToolbar(); refresh(); }, { once: true }); else { ensureNetworkToolbar(); refresh(); }
+  window.addEventListener('resize', () => { alignKumaSection(document.getElementById(SECTION_ID)); }, { passive: true });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { refresh(); }, { once: true }); else { refresh(); }
   window.setInterval(refresh, REFRESH_MS);
 })();
 V37_JS

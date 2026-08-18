@@ -319,6 +319,7 @@ Targeted upgrades are intended to avoid reinstalling or disturbing healthy core 
 - Keep the Pi operating system on independent DNS resolvers for recoverability.
 - The published Kuma status page exposes the monitors you choose to publish. Treat it as LAN/Tailscale-visible operational data.
 - The Device Manager is an administrative interface. Keep port `9108` restricted to trusted networks.
+- Use the installer-printed IP URLs for browser scan and Device Manager changes. Management POSTs reject untrusted origins and non-JSON content before performing an action.
 
 ## Repository structure
 

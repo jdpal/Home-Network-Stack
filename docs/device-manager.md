@@ -165,4 +165,10 @@ sudo pi-network-discover summary
 sudo pi-network-discover types
 ```
 
-The dashboard also exposes a Refresh Network control in releases that include the automatic-discovery UI.
+The dashboard exposes a **Scan network** control directly above the device-status cards. It shows the age of the latest scan, disables itself while discovery is running, reports progress or failure, and refreshes the cards when the scan finishes.
+
+The control uses the LAN/Tailscale-restricted management endpoint. Browser management requests must come from the same literal loopback, LAN, or Tailscale IP as the API host, use the configured dashboard or Device Manager port, and send JSON. Other browser origins and non-JSON POSTs are rejected before discovery starts.
+
+Use the IP-based Dashboard and Device Manager URLs printed by the installer for scan and edit actions. Direct JSON clients may omit the browser `Origin` header, but must still be on loopback, the configured LAN, or Tailscale and send `Content-Type: application/json`.
+
+A normal ten-second dashboard refresh reloads the latest stored result; it does not start another network scan.

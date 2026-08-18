@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Anchored the dashboard's Scan network control directly above the device-status cards
+- Added the latest scan age and device count to the dashboard control bar
+- Kept scan progress, failure reporting, responsive layout, and Device Manager access visible when Homepage has no services section
+- Restricted browser management POSTs to matching loopback, LAN, or Tailscale IP origins on the configured dashboard or API port
+- Required JSON management requests and stopped reflecting untrusted origins in writable API responses
+
 ## Repository licensing update
 
 - Added Apache License 2.0 for this project's original code and documentation

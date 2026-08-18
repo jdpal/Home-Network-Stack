@@ -146,7 +146,7 @@ heartbeat          dashboard group
 
 Homepage provides the main operations screen.
 
-The local status API exposes read-only operational metrics and the Device Manager administrative page.
+The local status API exposes read-only operational metrics and the Device Manager administrative page. Management POSTs are restricted by client network, browser origin/host/port matching, and JSON content type before any scan or device update is performed. Browser management uses the installer-printed loopback, LAN, or Tailscale IP URLs; arbitrary hostnames and cross-site origins fail closed.
 
 Dashboard device cards use:
 
